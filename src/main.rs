@@ -1,3 +1,5 @@
+#[macro_use] extern crate log;
+
 mod api;
 mod cli;
 
@@ -9,8 +11,15 @@ use std::io::Write;
 use std::net::{TcpStream, ToSocketAddrs, UdpSocket};
 use std::process;
 use structopt::StructOpt;
+use std::str;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize the logger from the environment
+    env_logger::init_from_env(
+        env_logger::Env::default()
+            .filter_or("RUST_LOG", "error")
+    );
+
     let cli = cli::Cli::from_args();
 
     match cli.command {
@@ -18,6 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             find_ip_address()?;
         }
         cli::AnyCommand::Unauthenticated(cli::UnauthenticatedCommand::GetPassword { address }) => {
+            debug!("Getting password for: {}", address);
             get_password(address)?;
         }
         cli::AnyCommand::Authenticated(cli) => {
@@ -33,10 +43,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
 
             let ssl_opts = mqtt::SslOptionsBuilder::new()
+                .ssl_version(mqtt::SslVersion::Tls_1_2)
                 .enable_server_cert_auth(false)
                 .finalize();
 
+            debug!("Connecting. Username: '{}', Password: '{}'", cli.username, cli.password);
+
             let conn_opts = mqtt::ConnectOptionsBuilder::new()
+                .mqtt_version(4)
                 .ssl_options(ssl_opts)
                 .user_name(cli.username)
                 .password(cli.password)
@@ -79,19 +93,39 @@ fn find_ip_address() -> std::io::Result<()> {
     let mut data = [0; 800];
 
     loop {
+        debug!("Broadcasting to UDP socket 5678");
         socket.send_to(&packet[..], "255.255.255.255:5678").unwrap();
         loop {
             if let Ok(length) = socket.recv(&mut data) {
+                debug!("Received {} bytes from UDB broadcast.", length);
                 if &data[..length] != packet {
-                    if let Ok(info) = serde_json::from_slice::<api::Info>(&data[..length]) {
-                        if !found.contains(&info.ip) {
-                            let _ = writeln!(
-                                stdout,
-                                "found.\nHostname: {}\nIP: {}\nblid/robot_id/username: {}",
-                                info.hostname, info.ip, info.robot_id
-                            );
-                            found.insert(info.ip);
-                        }
+                    debug!("{}", str::from_utf8(&data[..length]).unwrap());
+                    match serde_json::from_slice::<api::Info>(&data[..length]) {
+                        Ok(info) => {
+                            if !found.contains(&info.ip) {
+                                let hostname = info.hostname.clone();
+
+                                let robot_id = info.robot_id.unwrap_or_else(move || {
+                                    let names: Vec<&str> = hostname.split("-").collect();
+                                    if names.len() == 2 && (names[0] == "Roomba" || names[0] == "iRobot") {
+                                        names[1]
+                                    }
+                                    else {
+                                        "unknown"
+                                    }.to_string()
+                                });
+
+                                let _ = writeln!(
+                                    stdout,
+                                    "found.\nHostname: {}\nIP: {}\nblid/robot_id/username: {}",
+                                    info.hostname,
+                                    info.ip,
+                                    robot_id,
+                                );
+                                found.insert(info.ip);
+                            }
+                        },
+                        Err(err) => warn!("Parsing error: {}", err),
                     }
                 }
             }

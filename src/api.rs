@@ -115,7 +115,7 @@ pub struct Info {
     pub ip: String,
     pub hostname: String,
     #[serde(rename = "robotid")]
-    pub robot_id: String,
+    pub robot_id: Option<String>,
     #[serde(flatten)]
     pub other: HashMap<String, serde_json::Value>,
 }
